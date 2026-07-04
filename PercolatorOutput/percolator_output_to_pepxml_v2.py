@@ -118,7 +118,7 @@ def set_metadata_from_stream(xf, indent, filename):
     new_el = ET.Element('dataset_derivation', attrib={"generation_no": "0"})
     xf.write(indent) 
     xf.write(new_el)
-
+    xf.write(indent)
 
 def set_metadata():
     ### inserts necessary meta data after root
@@ -272,6 +272,83 @@ def update_spectrum_query(pin, tsv):
             # remove the element if not in tsvs dict
             msms_summary.remove(sq)
 
+def update_spectrum_query_test(tsv, pin, ns, sq, spectrum, prob):
+
+        # search tags
+        search_result = sq.find('.//{}search_result'.format(ns))
+        search_hit = search_result.find('.//{}search_hit'.format(ns))
+         
+        # search hit variables
+        massdiff = float(search_hit.attrib['massdiff'])
+        calc_neutral_pep_mass = float(search_hit.attrib['calc_neutral_pep_mass'])
+
+        # calculate isoptope mass difference (isotopic mass shift)
+        gap = float('inf')
+        isomassd = 0
+        C13C12_MASSDIFF_U = 1.0033548378
+        for isotope in range(-6, 7):
+            current_gap = abs(massdiff - isotope * C13C12_MASSDIFF_U)
+            if current_gap < gap:
+                gap = current_gap
+                isomassd = isotope
+
+        if gap > 0.1:
+            isomassd = 0
+
+        # calculated variables
+        prob = 1.0 - tsv[spectrum]["pep"]
+        massd_val = (massdiff - isomassd * C13C12_MASSDIFF_U) * 1000000.0 / calc_neutral_pep_mass
+
+        #### update the XML
+        if not math.isnan(pin[spectrum]["spectral_sim"]):
+            # update search hit with search scores (spectral sim)
+            search_score = ET.Element('search_score')
+            search_score.set('name', 'spectralsim')
+            search_score.set('value', str(pin[spectrum]["spectral_sim"]))
+            search_hit.append(search_score)
+
+        if not math.isnan(pin[spectrum]["rt_score"]):
+            # update search hit with search scores (rt score)
+            search_score = ET.Element('search_score')
+            search_score.set('name', 'rtscore')
+            search_score.set('value', str(pin[spectrum]["rt_score"]))
+            search_hit.append(search_score)
+
+        # peptideprophet analysis result
+        analysis_result = ET.Element('analysis_result')
+        analysis_result.set('analysis', 'peptideprophet')
+
+        # peptideprophet result summary
+        result_summary = ET.Element('peptideprophet_result')
+        result_summary.set('probability', str(prob))
+        result_summary.set('all_ntt_prob', "({prob:f},{prob:f},{prob:f})".format(prob=prob))
+
+        # search score summary
+        search_score_summary = ET.Element('search_score_summary')
+
+        # parameters for search score summary
+        parameters = [
+            ('fval', str(tsv[spectrum]["score"])),
+            ('ntt', str(pin[spectrum]["ntt"])),
+            ('nmc', str(pin[spectrum]["nmc"])),
+            ('massd', str(massd_val)),
+            ('isomassd', str(isomassd))
+        ]
+
+        # append to search score summary
+        for name, value in parameters:
+            parameter = ET.Element('parameter')
+            parameter.set('name', name)
+            parameter.set('value', value)
+            search_score_summary.append(parameter)
+
+        # append to document
+        result_summary.append(search_score_summary)
+        analysis_result.append(result_summary)
+        search_hit.append(analysis_result)
+        
+   
+
 def deep_hierarchy_roundtrip(input_path: str, output_path: str):
     """
     reads an xml with a deep hierarchy
@@ -339,7 +416,7 @@ def stream_and_write_xml(input_path, output_path):
     # Track the root element to regularly clear it from memory
     _, root = next(context) 
     indent_level_1 = "\n"
-    ns = 'http://regis-web.systemsbiology.net/pepXML'
+    ns = root.tag.split('}')[0] + '}'
     
     # 2. Open the destination file using xmlfile context manager
     with open(output_path, 'wb') as f:
@@ -356,8 +433,7 @@ def stream_and_write_xml(input_path, output_path):
                     # Only write when we reach the end of an immediate child tag
                     if event == 'end' and elem.getparent() == root:
                         
-                        # HERE: correct namesppace handling for spectrum_query
-                        if elem.tag == f"{ns}spectrum_query":
+                        if elem.tag == f'{ns}msms_run_summary':
                             print(elem.attrib)
                         
                         # Serialize and stream directly to the target file
@@ -368,13 +444,80 @@ def stream_and_write_xml(input_path, output_path):
                         elem.clear()
                         root.clear()
 
+
+def stream_and_write_xml_test(input_path, output_path, tsv, pin, prob):
+
+    context = ET.iterparse(input_path, events=('start', 'end'))
+    _, root = next(context) 
+    indent_level_1 = "\n"
+    ns = root.tag.split('}')[0] + '}'
+    msms_summary = None
+
+    with open(output_path, 'wb') as f:
+        with ET.xmlfile(f, encoding='utf-8', buffered=False) as xf:
+
+            xf.write_declaration()
+            
+            with xf.element(root.tag, attrib=root.attrib, nsmap=root.nsmap):
+
+                # --- Insert Metadata ---
+                set_metadata_from_stream(xf, indent_level_1, input_path)
+                
+                # Find the msms_run_summary element (main container)
+                for event, elem in context:
+                    if event == 'start' and elem.tag == f'{ns}msms_run_summary':
+                        msms_summary = elem
+                        break
+                    else:
+                        elem.clear()
+
+                # Start again from msms_summary and process its children
+                if msms_summary is not None:
+                    with xf.element(msms_summary.tag, attrib=msms_summary.attrib):      
+
+                        for event, elem in context:
+                            # Process only direct children of msms_summary
+                            if event == 'end' and elem.getparent() == msms_summary:
+
+                                # Handle spectrum query elements based on tsv dict
+                                if elem.tag == f'{ns}spectrum_query':
+                                    spectrum = elem.attrib['spectrum']
+                                    if spectrum in tsv:
+                                        # --- Update spectrum query with new data and write to file ---
+                                        update_spectrum_query_test(tsv, pin, ns, elem, spectrum, prob)
+                                        xf.write(elem)
+                                        elem.clear()
+                                    else:
+                                        # Skip writing this element and clear it from memory
+                                        elem.clear()
+                                else:
+                                    # Serialize and stream other elements directly to the target file
+                                    xf.write(elem)
+                                    elem.clear()
+                            # Stop when we hit the end tag of the msms_summary
+                            elif event == 'end' and elem == msms_summary:
+                                break
+                                
+                # Clear root 
+                root.clear() 
+
+                                     
+
+
 if __name__ == "__main__":
     filename = 'QC_Proteomics_20260202203556_pos.pepXML'
     outfile = 'lxml.pep.xml'
-    #pin_spectrum_dict = set_pin_dict()
-    #tsv_spectrum_dict = set_percolator_dict(0.5)
+    prob = 0.5
+    pin_spectrum_dict = set_pin_dict()
+    tsv_spectrum_dict = set_percolator_dict(prob)
     #set_metadata()
     #update_spectrum_query(pin_spectrum_dict, tsv_spectrum_dict)
     #write_new_xml()
     #deep_hierarchy_roundtrip(filename,outfile)
-    stream_and_write_xml(filename, outfile)
+    #stream_and_write_xml(filename, outfile)
+    stream_and_write_xml_test(filename, outfile, tsv_spectrum_dict, pin_spectrum_dict, prob)
+
+    # HERE
+    # remove namespace attrib fields in the 'child' elements
+    
+   

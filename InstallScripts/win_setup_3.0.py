@@ -15,6 +15,7 @@ import time
 import webbrowser
 import logging
 import threading
+import pymsi
 from pathlib import Path
 from tkinter import messagebox
 
@@ -104,6 +105,30 @@ def extract_archive(archive_path: Path, dest_dir: Path, logger):
     if DELETE_DOWNLOADS:
         archive_path.unlink()
         logger.debug(f"Deleted archive: {archive_path.name}")
+
+def extract_msi(msi_path: Path, software_dir: Path, logger):
+    logger.info(f"Extracting {msi_path}...")
+
+    msi_path = os.path.normpath(os.path.abspath(msi_path))
+    software_dir = os.path.normpath(os.path.abspath(software_dir))
+
+    cmd = [
+        "msiexec.exe", 
+        "/i", f'"{msi_path}"', 
+        "/qn", 
+        f'TARGETDIR="{software_dir}"',
+        "MSIINSTALLPERUSER=1",
+        "ALLUSERS=2"
+    ]
+    
+    try:
+        # Execute the command and block until it finishes
+        result = subprocess.run(cmd, check=True, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        logger.info("Extraction completed successfully.")
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.info(f"Error extracting MSI: {e}")
+        return False
 
 def run_cmd(args, cwd=None, check=True, capture=False, new_console=False, logger=None):
     kwargs = {'cwd': cwd, 'check': check}
@@ -304,6 +329,29 @@ def setup_proteowizard(software_dir: Path, logger):
         else:
             raise FileNotFoundError("ProteoWizard archive not found.")
 
+def setup_diann(software_dir: Path, logger):
+    logger.info("\n===== Configuring DIA-NN (for MSBooster) =====")
+    diann_dir = software_dir / "DIA-NN"
+    
+    if not diann_dir.exists():
+        logger.warning("DIA-NN requires manual download due to licensing.")
+        logger.warning("DIA-NN is for academic use only. Please read the license carefully. \nIf you do not meet the requirements for academic use, please do not download.")
+
+        response = messagebox.askyesno("DIA-NN Academic Confirmation", "Are you using MaSpeQC for academic or research purposes?")
+
+        if response:
+            webbrowser.open("https://github.com/vdemichev/DiaNN/releases")
+            messagebox.showinfo("Action Required", f"Please download the 'DIA-NN-Academia-2.2.0.msi' to {software_dir}\n\nPress OK when the download is complete.")
+            logger.info("Manual download confirmed.")
+
+            logger.info("Extracting DIA-NN MSI...")
+            result = extract_msi(software_dir / "DIA-NN-Academia-2.2.0.msi", software_dir, logger)
+            return result
+        else:
+            logger.warning("Proteomics QC will not use MSBooster for MS-MS metrics.")
+            return False
+            
+        
 def setup_msfragger(software_dir: Path, logger):
     logger.info("\n===== Configuring MSFragger =====")
     msfrag_dir = software_dir / "MSFragger-4.4.1"
@@ -319,8 +367,9 @@ def setup_msfragger(software_dir: Path, logger):
     if zip_path:
         extract_archive(zip_path, software_dir, logger)
     else:
-        raise FileNotFoundError("MSFragger 4.4.1 archive not found.")
         logger.info("MaSpeQC will use Morpheus for proteomics QC")
+        raise FileNotFoundError("MSFragger 4.4.1 archive not found.")
+        
 
 def setup_msbooster(software_dir: Path, logger, progress_bar):
     logger.info("\n===== Configuring MSBooster =====")
@@ -487,13 +536,23 @@ class MaSpeQCSetupApp(ctk.CTk):
         except Exception as e:
             status['MSFragger'] = False
             print(f"MSFragger Setup Failed: {e}")
-    
+
         try:
-            setup_msbooster(software_dir, self.logger, self.progress_bar)
-            status['MSBooster'] = True
+            diann = setup_diann(software_dir, self.logger)
+            if diann:
+                status['DIA-NN'] = True
         except Exception as e:
-            status['MSBooster'] = False
-            print(f"MSBooster Setup Failed: {e}")
+            diann = False
+            status['DIA-NN'] = False
+            print(f"DIA-NN Setup Failed (MSBooster will be skipped): {e}")
+
+        if diann: # MSBooster only if DIA-NN is installed
+            try:
+                setup_msbooster(software_dir, self.logger, self.progress_bar)
+                status['MSBooster'] = True
+            except Exception as e:
+                status['MSBooster'] = False
+                print(f"MSBooster Setup Failed: {e}")
     
         try:
             setup_percolator(software_dir, self.logger, self.progress_bar)
@@ -533,18 +592,21 @@ class MaSpeQCSetupApp(ctk.CTk):
         status = {}
     
         try:
-            setup_percolator(software_dir, self.logger, self.progress_bar)
-            status['Percolator'] = True
+            diann = setup_diann(software_dir, self.logger)
+            if diann:
+                status['DIA-NN'] = True
         except Exception as e:
-            status['Percolator'] = False
-            print(f"Percolator Setup Failed: {e}")
+            diann = False
+            status['DIA-NN'] = False
+            print(f"DIA-NN Setup Failed (MSBooster will be skipped): {e}")
 
-        try:
-            setup_philosopher(software_dir, self.logger, self.progress_bar)
-            status['Philosopher'] = True
-        except Exception as e:
-            status['Philosopher'] = False
-            print(f"Philosopher Setup Failed: {e}")
+        if diann: # MSBooster only if DIA-NN is installed
+            try:
+                setup_msbooster(software_dir, self.logger, self.progress_bar)
+                status['MSBooster'] = True
+            except Exception as e:
+                status['MSBooster'] = False
+                print(f"MSBooster Setup Failed: {e}")
 
 
         self.logger.info("\n===== Summary =====")

@@ -6,7 +6,7 @@ import json
 import secrets
 import string
 import urllib.request
-import certifi
+import requests
 import ssl
 import zipfile
 import tarfile
@@ -15,7 +15,6 @@ import time
 import webbrowser
 import logging
 import threading
-import pymsi
 from pathlib import Path
 from tkinter import messagebox
 
@@ -54,43 +53,78 @@ class GUIHandler(logging.Handler):
         self.textbox.configure(state="disabled")
 
 # --- Setup Functions (Modified for GUI) ---
-def download_file(url: str, dest_path: Path, logger, progress_bar):
-
-    # 1. Create a secure SSL context using certifi's CA bundle
-    ssl_context = ssl.create_default_context(cafile=certifi.where())
+def download_file2(url: str, dest_path: Path, logger, progress_bar):
     
-    # 2. Configure headers (GitHub requires a User-Agent to avoid 403 blocks)
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Python-urllib/3.x'
-    }
-    
-    # 3. Create the request object
-    req = urllib.request.Request(url, headers=headers)
+    if "mysql" in url:
+        headers = {
+            'User-Agent': 'curl/7.29.0',
+            'Accept': '*/*'
+        }
+    else:
+        # GitHub and other links get the fast desktop browser footprint
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
     
     logger.info(f"Downloading {url}...")
-    
-    # 4. Open the URL with the custom SSL context
     progress_bar.set(0.0)
-    with urllib.request.urlopen(req, context=ssl_context) as response:
-
-        # progress tracking
-        total_size = int(response.headers.get('Content-Length', 0))
+    
+    # 2. 'requests' automatically preserves your browser footprint through GitHub's 302 redirect
+    # It also natively manages its own secure SSL validation without manual context setups!
+    with requests.get(url, headers=headers, stream=True) as response:
+        response.raise_for_status()
+        
+        total_size = int(response.headers.get('content-length', 0))
         downloaded_size = 0
-
-        # Open local file in Write-Binary ('wb') mode
+        
+        # 3. Stream data loop to save the file and feed your UI progress bar
         with open(dest_path, 'wb') as local_file:
-            # Read and write in 16KB chunks to keep memory footprint low
-            while chunk := response.read(16384):
-                local_file.write(chunk)
-                downloaded_size += len(chunk)
+            for chunk in response.iter_content(chunk_size=16384):
+                if chunk:
+                    local_file.write(chunk)
+                    downloaded_size += len(chunk)
+                    
+                    if total_size > 0:
+                        progress_bar.set(downloaded_size / total_size)
                         
-                if total_size > 0:
-                    progress_ratio = downloaded_size / total_size
-                    pct = int(progress_ratio * 100)
-                    # Update UI bar 
-                    progress_bar.set(progress_ratio)
-
     progress_bar.set(1.0)
+    return dest_path
+
+
+def download_file(url: str, dest_path: Path, logger, progress_bar):
+    
+    headers = {
+        'User-Agent': 'curl/7.81.0', 
+        'Accept': '*/*'
+    }
+    
+    logger.info(f"Downloading {url}...")
+    progress_bar.set(0.0)
+    
+    # Using a session ensures redirects (302) pass cookies/headers cleanly to the CDN mirror
+    with requests.Session() as session:
+        with session.get(url, headers=headers, stream=True) as response:
+            response.raise_for_status()
+            total_size = int(response.headers.get('content-length', 0))
+            downloaded_size = 0
+            
+            chunk_size = 1024 * 1024  # 1MB blocks for fast download throughput
+            last_reported_percent = 0.0
+
+            with open(dest_path, 'wb') as local_file:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if chunk:
+                        local_file.write(chunk)
+                        downloaded_size += len(chunk)
+                        
+                        if total_size > 0:
+                            current_percent = downloaded_size / total_size
+                            if (current_percent - last_reported_percent) >= 0.01:
+                                progress_bar.set(current_percent)
+                                last_reported_percent = current_percent
+                                
+    progress_bar.set(1.0)
+    logger.info("Download completed successfully!")
     return dest_path
 
 def extract_archive(archive_path: Path, dest_dir: Path, logger):
@@ -112,13 +146,19 @@ def extract_msi(msi_path: Path, software_dir: Path, logger):
     msi_path = os.path.normpath(os.path.abspath(msi_path))
     software_dir = os.path.normpath(os.path.abspath(software_dir))
 
+    
+    if not os.path.exists(msi_path):
+        print(f"❌ Error: Double-check path! Cannot find file at: {msi_path}")
+        return False
+
+    # Universal silent installation arguments
     cmd = [
-        "msiexec.exe", 
-        "/i", f'"{msi_path}"', 
-        "/qn", 
+        "msiexec", "/i", msi_path, 
+        "/passive", "/norestart", 
+        "ALLUSERS=1",
         f'TARGETDIR="{software_dir}"',
-        "MSIINSTALLPERUSER=1",
-        "ALLUSERS=2"
+        f'INSTALLDIR="{software_dir}"',
+        f'APPLICATIONFOLDER="{software_dir}"'
     ]
     
     try:
@@ -341,12 +381,15 @@ def setup_diann(software_dir: Path, logger):
 
         if response:
             webbrowser.open("https://github.com/vdemichev/DiaNN/releases")
-            messagebox.showinfo("Action Required", f"Please download the 'DIA-NN-Academia-2.2.0.msi' to {software_dir}\n\nPress OK when the download is complete.")
+            messagebox.showinfo(
+                "Action Required",
+                f"Download 'DIA-NN-Academia-2.2.0.msi' and extract to:\n"
+                f"{software_dir}\\Software\\DIA-NN\\\n\n"
+                "Press OK when complete."
+            )
             logger.info("Manual download confirmed.")
 
-            logger.info("Extracting DIA-NN MSI...")
-            result = extract_msi(software_dir / "DIA-NN-Academia-2.2.0.msi", software_dir, logger)
-            return result
+            return True
         else:
             logger.warning("Proteomics QC will not use MSBooster for MS-MS metrics.")
             return False
@@ -471,7 +514,7 @@ class MaSpeQCSetupApp(ctk.CTk):
         self.logger.info("Initializing MaSpeQC 1.0 Setup...")
         
         # Run setup in a background thread to prevent UI freezing
-        thread = threading.Thread(target=self.run_setup_tasks_test, daemon=True)
+        thread = threading.Thread(target=self.run_setup_tasks, daemon=True)
         thread.start()
 
     def run_setup_tasks(self):
@@ -544,7 +587,7 @@ class MaSpeQCSetupApp(ctk.CTk):
         except Exception as e:
             diann = False
             status['DIA-NN'] = False
-            print(f"DIA-NN Setup Failed (MSBooster will be skipped): {e}")
+            print(f"No DIA-NN (MSBooster will be skipped): {e}")
 
         if diann: # MSBooster only if DIA-NN is installed
             try:
@@ -592,14 +635,21 @@ class MaSpeQCSetupApp(ctk.CTk):
         status = {}
     
         try:
-            diann = setup_diann(software_dir, self.logger)
-            if diann:
-                status['DIA-NN'] = True
+            setup_mzmine(software_dir, self.logger, self.progress_bar)
+            status['MZmine'] = True
         except Exception as e:
-            diann = False
-            status['DIA-NN'] = False
-            print(f"DIA-NN Setup Failed (MSBooster will be skipped): {e}")
+            status['MZmine'] = False
+            print(f"MZmine Setup Failed: {e}")
+    
+        try:
+            setup_morpheus(software_dir, self.logger, self.progress_bar)
+            status['Morpheus'] = True
+        except Exception as e:
+            status['Morpheus'] = False
+            print(f"Morpheus Setup Failed: {e}")
+    
 
+        diann = True
         if diann: # MSBooster only if DIA-NN is installed
             try:
                 setup_msbooster(software_dir, self.logger, self.progress_bar)
@@ -607,6 +657,20 @@ class MaSpeQCSetupApp(ctk.CTk):
             except Exception as e:
                 status['MSBooster'] = False
                 print(f"MSBooster Setup Failed: {e}")
+    
+        try:
+            setup_percolator(software_dir, self.logger, self.progress_bar)
+            status['Percolator'] = True
+        except Exception as e:
+            status['Percolator'] = False
+            print(f"Percolator Setup Failed: {e}")
+
+        try:
+            setup_philosopher(software_dir, self.logger, self.progress_bar)
+            status['Philosopher'] = True
+        except Exception as e:
+            status['Philosopher'] = False
+            print(f"Philosopher Setup Failed: {e}")
 
 
         self.logger.info("\n===== Summary =====")

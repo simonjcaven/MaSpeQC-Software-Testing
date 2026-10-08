@@ -102,45 +102,7 @@ class GUIHandler(logging.Handler):
         self.textbox.see("end")
         self.textbox.configure(state="disabled")
 
-# --- Setup Functions (Modified for GUI) ---
-def download_file2(url: str, dest_path: Path, logger, progress_bar):
-    
-    if "mysql" in url:
-        headers = {
-            'User-Agent': 'curl/7.29.0',
-            'Accept': '*/*'
-        }
-    else:
-        # GitHub and other links get the fast desktop browser footprint
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-    
-    logger.info(f"Downloading {url}...")
-    progress_bar.set(0.0)
-    
-    # 2. 'requests' automatically preserves your browser footprint through GitHub's 302 redirect
-    # It also natively manages its own secure SSL validation without manual context setups!
-    with requests.get(url, headers=headers, stream=True) as response:
-        response.raise_for_status()
-        
-        total_size = int(response.headers.get('content-length', 0))
-        downloaded_size = 0
-        
-        # 3. Stream data loop to save the file and feed your UI progress bar
-        with open(dest_path, 'wb') as local_file:
-            for chunk in response.iter_content(chunk_size=16384):
-                if chunk:
-                    local_file.write(chunk)
-                    downloaded_size += len(chunk)
-                    
-                    if total_size > 0:
-                        progress_bar.set(downloaded_size / total_size)
-                        
-    progress_bar.set(1.0)
-    return dest_path
-
-
+# --- Setup Functions  ---
 def download_file(url: str, dest_path: Path, logger, progress_bar):
     
     headers = {
@@ -204,13 +166,13 @@ def extract_msi(msi_path: Path, software_dir: Path, logger):
     # Universal silent installation arguments
     cmd = [
         "msiexec", 
-        "/a", msi_path,
+        "/a", msi_path, # admin flag
         "/passive", 
         "/norestart", 
         f"TARGETDIR={software_dir}"  # Clean string, no nested quotes
     ]
 
-    cmd2 = [ "msiexec", 
+    cmd_user_test = [ "msiexec", 
            "/i", msi_path, 
            "/norestart", 
            "/qn",
@@ -220,7 +182,7 @@ def extract_msi(msi_path: Path, software_dir: Path, logger):
     
     try:
         # Execute the command and block until it finishes
-        result = subprocess.run(cmd2, check=True, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        result = subprocess.run(cmd, check=True, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         logger.info("Extraction completed successfully.")
         return True
     except subprocess.CalledProcessError as e:
@@ -321,6 +283,8 @@ def setup_nodejs(base_dir: Path, software_dir: Path, logger, progress_bar):
         run_cmd([node_dir / "npm.cmd", "install"], cwd=server_dir, logger=logger)
         
         logger.info("Starting Node.js configuration server...")
+        logger.info("*** FOR PROTEOMICS *** Add all monitored instruments, fill in the forms, and click 'Save Proteomics'")
+        logger.info("*** FOR METABOLOMICS *** Click 'Metabolomics' in the top right of the page, add all monitored instruments, fill in the forms, and click 'Save Metabolomics'")
         subprocess.Popen(f'"{node_dir / "npm.cmd"}" start --setup', cwd=server_dir, env=env, shell=True, creationflags=subprocess.CREATE_NEW_CONSOLE)
         
         time.sleep(3) 
@@ -374,6 +338,7 @@ def setup_python_env(base_dir: Path, local_python_exe: Path, logger):
     python_alias = local_python_exe if local_python_exe.exists() else sys.executable
     
     if pipeline_dir.exists() and not venv_dir.exists():
+        logger.info("*** MaSpeQC processing is run in a virtual Python environment. Please see the README for more information.***")
         logger.info(f"Creating virtual environment using {python_alias}...")
         run_cmd([str(python_alias), "-m", "venv", ".venv"], cwd=pipeline_dir)
         
@@ -384,6 +349,7 @@ def setup_python_env(base_dir: Path, local_python_exe: Path, logger):
         run_cmd([str(pip_exe), "install", "-r", "requirements.txt"], cwd=pipeline_dir)
         
         if (pipeline_dir / "Config" / ".maspeqc_gen").exists():
+            logger.info("*** MaSpeQC stores all of its QC data in the MySQL database. Please see the README for more information. ***")
             logger.info("Running MPMF_Database_SetUp.py...")
             run_cmd([str(python_exe), "MPMF_Database_SetUp.py"], cwd=pipeline_dir)
 
@@ -415,7 +381,12 @@ def setup_proteowizard(software_dir: Path, logger):
         if not tar_files:
             logger.warning("ProteoWizard requires manual download due to licensing.")
             webbrowser.open("https://proteowizard.sourceforge.io/download.html")
-            messagebox.showinfo("Action Required", f"Please download the 'Windows 64-bit tar.bz2' to {software_dir}\n\nPress OK when the download is complete.")
+            message = f"""From the PLATFORM field select Windows 64-bit tar.bz2 \
+                        (able to convert vendor files except T2D) and click DOWNLOAD. \
+                        Then, move this file to {software_dir}
+
+                        Press OK when complete."""
+            messagebox.showinfo("Action Required",message)
             logger.info("Manual download confirmed.")
             tar_files = list(software_dir.glob("pwiz-bin-*.tar.bz2"))
             
@@ -426,7 +397,7 @@ def setup_proteowizard(software_dir: Path, logger):
         else:
             raise FileNotFoundError("ProteoWizard archive not found.")
 
-def setup_diann2(software_dir: Path, logger):
+def setup_diann(software_dir: Path, logger):
     logger.info("\n===== Configuring DIA-NN (for MSBooster) =====")
     diann_dir = software_dir / "DIA-NN"
     
@@ -451,7 +422,7 @@ def setup_diann2(software_dir: Path, logger):
             logger.warning("Proteomics QC will not use MSBooster for MS-MS metrics.")
             return False
 
-def setup_diann(software_dir: Path, logger):
+def setup_diann_extract(software_dir: Path, logger):
     logger.info("\n===== Configuring DIA-NN (for MSBooster) =====")
     diann_dir = software_dir / "DIA-NN"
     
@@ -479,13 +450,22 @@ def setup_diann(software_dir: Path, logger):
         
 def setup_msfragger(software_dir: Path, logger):
     logger.info("\n===== Configuring MSFragger =====")
+    log_message = f"""MaSpeQC will try and use the MSFragger search engine for proteomics QC
+                      If you do not have an academic email, just click OK and MaSpeQC will use Morpheus for proteomics QC"""
+    logger.info(log_message)
     msfrag_dir = software_dir / "MSFragger-4.4.1"
     
     if not msfrag_dir.exists():
         
         logger.warning("MSFragger requires manual download due to licensing. \n An academic email address is also required to download.")
         webbrowser.open("http://msfragger-upgrader.nesvilab.org/upgrader/")
-        messagebox.showinfo("Action Required", f"Please select release 4.4.1 and fill in the form. \n\n A link to a zip file will be sent to your email. \n\n Add the zip to {software_dir}\n\nPress OK when complete.")
+        message = f"""Please select release 4.4.1 and fill in the form.
+                    A link to a zip file will be sent to your email.
+                    Add the zip to {software_dir}.
+                    There is no need to unzip the file, MaSpeQC will do this automatically.
+
+                    Press OK when complete."""
+        messagebox.showinfo("Action Required", message)
         logger.info("Manual download confirmed.")
 
     zip_path = software_dir / "MSFragger-4.4.1.zip"

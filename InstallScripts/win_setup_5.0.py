@@ -256,7 +256,7 @@ def setup_mysql(base_dir: Path, software_dir: Path, logger, app, progress_bar):
         
         # Request MySQL root password via GUI dialog
         def ask_password():
-            dialog = ctk.CTkInputDialog(text="Enter a new database password for the 'root' user:", title="MySQL Root Password")
+            dialog = ctk.CTkInputDialog(text="Enter a new database password for the 'root' user:\n (not needed to run MaSpeQC, for recovery only) ", title="MySQL Root Password")
             return dialog.get_input()
         
         # Must call dialog from main thread, wait for result
@@ -381,11 +381,10 @@ def setup_proteowizard(software_dir: Path, logger):
         if not tar_files:
             logger.warning("ProteoWizard requires manual download due to licensing.")
             webbrowser.open("https://proteowizard.sourceforge.io/download.html")
-            message = f"""From the PLATFORM field select Windows 64-bit tar.bz2 \
-                        (able to convert vendor files except T2D) and click DOWNLOAD. \
-                        Then, move this file to {software_dir}
-
-                        Press OK when complete."""
+            message = "From the PLATFORM field select Windows 64-bit tar.bz2"\
+                        "(able to convert vendor files except T2D) and click DOWNLOAD. " \
+                        "Then, move this file to " + str(software_dir) + \
+                        ". Press OK when complete."
             messagebox.showinfo("Action Required",message)
             logger.info("Manual download confirmed.")
             tar_files = list(software_dir.glob("pwiz-bin-*.tar.bz2"))
@@ -450,8 +449,8 @@ def setup_diann_extract(software_dir: Path, logger):
         
 def setup_msfragger(software_dir: Path, logger):
     logger.info("\n===== Configuring MSFragger =====")
-    log_message = f"""MaSpeQC will try and use the MSFragger search engine for proteomics QC
-                      If you do not have an academic email, just click OK and MaSpeQC will use Morpheus for proteomics QC"""
+    log_message = "MaSpeQC will try and use the MSFragger search engine for proteomics QC " \
+                      "If you do not have an academic email, just click OK and MaSpeQC will use Morpheus for proteomics QC\n\n"
     logger.info(log_message)
     msfrag_dir = software_dir / "MSFragger-4.4.1"
     
@@ -459,12 +458,11 @@ def setup_msfragger(software_dir: Path, logger):
         
         logger.warning("MSFragger requires manual download due to licensing. \n An academic email address is also required to download.")
         webbrowser.open("http://msfragger-upgrader.nesvilab.org/upgrader/")
-        message = f"""Please select release 4.4.1 and fill in the form.
-                    A link to a zip file will be sent to your email.
-                    Add the zip to {software_dir}.
-                    There is no need to unzip the file, MaSpeQC will do this automatically.
-
-                    Press OK when complete."""
+        message = "Please select release 4.4.1 and fill in the form. " \
+                    "A link to a zip file will be sent to your email. " \
+                    "Add the zip to " + str(software_dir) + \
+                    " There is no need to unzip the file, MaSpeQC will do this automatically. " \
+                    "Press OK when complete."
         messagebox.showinfo("Action Required", message)
         logger.info("Manual download confirmed.")
 
@@ -686,7 +684,8 @@ class MaSpeQCSetupApp(ctk.CTk):
             state = "Configured Successfully" if success else "Failed"
             self.logger.info(f"{component}: {state}")
 
-        self.logger.info("\nSetup script finished.")
+        self.logger.info("\nSetup script finished.\n")
+        self.logger.info("\nPress Exit to start using MaSpeQC.")
         self.after(0, lambda: self.start_btn.configure(text="Finished", state="disabled"))
 
     def run_setup_tasks_test(self):
@@ -705,13 +704,11 @@ class MaSpeQCSetupApp(ctk.CTk):
         status = {}
     
         try:
-            diann = setup_diann(software_dir, self.logger)
-            if diann:
-                status['DIA-NN'] = True
+            setup_proteowizard(software_dir, self.logger)
+            status['ProteoWizard'] = True
         except Exception as e:
-            diann = False
-            status['DIA-NN'] = False
-            print(f"No DIA-NN (MSBooster will be skipped): {e}")
+            status['ProteoWizard'] = False
+            print(f"ProteoWizard Setup Failed: {e}")
     
 
         self.logger.info("\n===== Summary =====")
@@ -719,7 +716,8 @@ class MaSpeQCSetupApp(ctk.CTk):
             state = "Configured Successfully" if success else "Failed"
             self.logger.info(f"{component}: {state}")
 
-        self.logger.info("\nSetup script finished.")
+        self.logger.info("\nSetup script finished.\n")
+        self.logger.info("\nPress Exit to start using MaSpeQC.")
         self.after(0, lambda: self.start_btn.configure(text="Finished", state="disabled"))
 
 if __name__ == "__main__":
